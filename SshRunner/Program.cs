@@ -3,11 +3,31 @@
 SshClient SshClient = null;
 var SshPassword = "";
 var Args = Environment.GetCommandLineArgs().Skip(1).ToArray();
+
+var ArgsDic = new Dictionary<string, string>() { };
+
 if (Args.Length > 0)
 {
+    var CommandType = "-f";
     foreach (var Item in Args)
     {
-        ReadFileCommand(Item);
+        switch (Item.ToLower())
+        {
+            case "-f":
+                CommandType = "-f";
+                break;
+            case "-p":
+                CommandType = "-p";
+                break;
+            default:
+                ArgsDic.Add(CommandType, Item);
+                break;
+        }
+    }
+
+    foreach (var FileName in ArgsDic.Where(Item => Item.Key == "-f"))
+    {
+        ReadFileCommand(FileName.Value);
     }
 }
 else
@@ -70,12 +90,28 @@ void StartLoop()
 void ReadFileCommand(string FileName)
 {
     var AllLine = File.ReadAllLines(FileName);
+    var AllParam = ArgsDic
+        .Where(Item => Item.Key == "-p")
+        .Select(Item => Item.Value);
+
     foreach (var Command in AllLine)
     {
         if (string.IsNullOrWhiteSpace(Command))
             continue;
 
-        AnalyzeAndRunCommand(Command);
+        var RunCommand = Command;
+        if (AllParam.Any())
+        {
+            foreach (var Param in AllParam)
+            {
+                var ParamArray = Param.Trim().Split('=');
+                var ParamKey = ParamArray[0];
+                var ParamValue = ParamArray[1];
+                RunCommand = Command.Replace(ParamKey, ParamValue);
+            }
+        }
+        //Console.WriteLine(RunCommand);
+        AnalyzeAndRunCommand(RunCommand);
     }
 }
 void RunCommand(string Command)
@@ -115,7 +151,10 @@ void AnalyzeAndRunCommand(string Command)
     var CommandArray = Command.Split(' ');
     var CommandHead = CommandArray[0];
 
+    Console.BackgroundColor = ConsoleColor.Green;
     Console.WriteLine($"run command:「{Command}」\n");
+    Console.ResetColor();
+
     switch (CommandHead.ToLower())
     {
         case "ssh":
@@ -128,7 +167,7 @@ void AnalyzeAndRunCommand(string Command)
                 Console.WriteLine($"SSH Client connect error");
             break;
         case "scp":
-            ScpUpload(CommandArray);
+            ScpSend(CommandArray);
             break;
         default:
             Ssh_SendCommand(Command);
@@ -149,11 +188,31 @@ SshClient NewSsh(string[] CommandArray)
     return SshClient;
 }
 
-void ScpUpload(string[] CommandArray)
+void ScpSend(string[] CommandArray)
 {
-    var LocalFileName = CommandArray[1];
-    var ScpBody = CommandArray[2];
-    var ScpPassword = CommandArray[3];
+    var ScpPassword = CommandArray.LastOrDefault();
+
+    var LocalFileName = "";
+    var ScpBody = "";
+
+    var IsUpload = false;
+    foreach (var Item in CommandArray.Skip(1))
+    {
+        if (Item.Contains('@'))
+        {
+            ScpBody = Item;
+            IsUpload = true;
+        }
+        else
+        {
+            LocalFileName = Item;
+            IsUpload = false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(LocalFileName) && !string.IsNullOrWhiteSpace(ScpBody))
+            break;
+    }
+
     var ScpBodyArray = ScpBody.Split('@');
     var ScpUserName = ScpBodyArray[0];
     var RemoteInfo = ScpBodyArray[1];
@@ -164,27 +223,44 @@ void ScpUpload(string[] CommandArray)
 
     var ScpClient = new SftpClient(ScpHost, ScpUserName, ScpPassword);
     ScpClient.Connect();
-    var Buffer = File.ReadAllBytes(LocalFileName);
-    var Info = new FileInfo(LocalFileName);
 
-    var TotalLength = Buffer.Length;
-    var Ms = new MemoryStream(Buffer);
-    var LastPersent = 0.0;
-
-    Console.WriteLine($"scp upload file {Info.Name} start");
-
-    ScpClient.UploadFile(Ms, RemotePath, (WriteLength) =>
+    if (IsUpload)
     {
-        var Persnet = Math.Floor((double)WriteLength / TotalLength * 100);
-        if (Persnet - LastPersent >= 5)
+        var Buffer = File.ReadAllBytes(LocalFileName);
+        var Info = new FileInfo(LocalFileName);
+
+        var TotalLength = Buffer.Length;
+        var Ms = new MemoryStream(Buffer);
+        var LastPersent = 0.0;
+
+        Console.WriteLine($"scp upload file {Info.Name} start");
+
+        ScpClient.UploadFile(Ms, RemotePath, (WriteLength) =>
         {
-            LastPersent = Persnet;
-            Console.WriteLine($"scp upload file {Info.Name}....{Persnet}%");
-        }
-    });
+            var Persnet = Math.Floor((double)WriteLength / TotalLength * 100);
+            if (Persnet - LastPersent >= 5)
+            {
+                LastPersent = Persnet;
+                Console.WriteLine($"scp upload file {Info.Name}....{Persnet}%");
+            }
+        });
 
-    Console.WriteLine($"scp upload file {Info.Name} finish");
+        Console.WriteLine($"scp upload file {Info.Name} finish");
+    }
+    else
+    {
+        var Info = new FileInfo(LocalFileName);
+        if (Info.Exists)
+            Info.Delete();
+        using var WriteMs = Info.Create();
+        Console.WriteLine($"scp download {Info.Name} start");
+        ScpClient.DownloadFile(RemotePath, WriteMs, (WriteLength) =>
+        {
 
+        });
+
+        Console.WriteLine($"scp download file {Info.Name} finish");
+    }
 }
 
 enum CommandForType
